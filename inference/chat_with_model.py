@@ -25,19 +25,29 @@ device = 'mps' if torch.backends.mps.is_available() else 'cpu'  # Prefer MPS on 
 model_path = 'out/finetuned_distilgpt2'
 block_size = 128  # Matches tokenizer max_length in train.py
 
+# Verify model path exists
+if not os.path.exists(model_path):
+    logging.error("Model directory %s not found", model_path)
+    raise FileNotFoundError(f"Model directory {model_path} not found. Run training/train.py first.")
+if not os.path.exists(os.path.join(model_path, 'pytorch_model.bin')):
+    logging.error("Model weights pytorch_model.bin not found in %s", model_path)
+    raise FileNotFoundError(f"Model weights pytorch_model.bin not found in {model_path}. Run training/train.py first.")
+
 # Load model and tokenizer
 try:
     config = GPTConfig()
-    model = GPT.from_pretrained("distilgpt2").to(device)
-    model.load_state_dict(torch.load(os.path.join(model_path, 'pytorch_model.bin'), map_location=device), strict=False)
+    model = GPT(config)  # Initialize GPT with DistilGPT-2
+    model.model.load_pretrained(model_path)  # Load fine-tuned weights
+    model = model.to(device)
     model.eval()
     tokenizer = model.tokenizer
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    logging.info("Model and tokenizer loaded successfully from %s", model_path)
+    logging.info("Model and tokenizer loaded successfully from %s on device %s", model_path, device)
 except Exception as e:
     logging.error("Failed to load model or tokenizer from %s: %s", model_path, str(e))
-    raise FileNotFoundError(f"Failed to load model or tokenizer from {model_path}: {str(e)}")
+    print(f"Error: Failed to load model or tokenizer from {model_path}: {str(e)}")
+    raise
 
 # Chat loop with history and parameter tuning
 history = []

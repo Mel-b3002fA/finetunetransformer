@@ -1,69 +1,74 @@
-from model.transformer import GPT, GPTConfig
-from transformers import Trainer, TrainingArguments
-from datasets import load_dataset
 import torch
-import os
+from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments
+from datasets import load_dataset
 
 def main():
-    # Initialize model and config
-    config = GPTConfig()
-    model = GPT.from_pretrained("distilgpt2", override_args={"dropout": 0.1})
+    # Explicitly set device (CPU for Intel Mac, as CUDA/MPS is unavailable or unreliable)
+    device = torch.device("cpu")
+    print(f"Using device: {device}")
 
-    # Load dataset
-    dataset_path = "data/processed_dataset.jsonl"
-    if not os.path.exists(dataset_path):
-        raise FileNotFoundError(f"Dataset file {dataset_path} not found. Run data/dataset.py first.")
+    # Load model and tokenizer
+    model = GPT2LMHeadModel.from_pretrained("distilgpt2").to(device)
+    tokenizer = GPT2Tokenizer.from_pretrained("distilgpt2")
     
-    dataset = load_dataset("json", data_files=dataset_path)
+    # Set pad_token to eos_token to avoid padding issues
+    tokenizer.pad_token = tokenizer.eos_token
+    model.config.pad_token_id = model.config.eos_token_id
+
+    # Apply dropout override
+    model.config.dropout = 0.1  # Set dropout directly in model config
     
+    # Load a sample dataset (wikitext for demonstration; replace with your dataset)
+    try:
+        dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        return
+
+    # Tokenize dataset
     def tokenize_function(examples):
-        encodings = model.tokenizer(
-            examples["prompt"],
-            padding="max_length",
-            truncation=True,
-            max_length=128,
-            return_tensors="pt"
-        )
-        encodings["labels"] = encodings["input_ids"].clone()
-        return encodings
+        return tokenizer(examples["text"], padding="max_length", truncation=True, max_length=512)
     
-    tokenized_dataset = dataset.map(tokenize_function, batched=True)
-    tokenized_dataset = tokenized_dataset["train"].train_test_split(test_size=0.1)
+    try:
+        tokenized_dataset = dataset.map(tokenize_function, batched=True)
+    except Exception as e:
+        print(f"Error tokenizing dataset: {e}")
+        return
     
+    # Remove unnecessary columns and set format
+    tokenized_dataset = tokenized_dataset.remove_columns(["text"])
+    tokenized_dataset.set_format("torch")
+
     # Define training arguments
     training_args = TrainingArguments(
-        output_dir="./out",
+        output_dir="./results",
+        evaluation_strategy="epoch",
+        learning_rate=2e-5,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
         num_train_epochs=3,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
-        warmup_steps=500,
         weight_decay=0.01,
         logging_dir="./logs",
         logging_steps=10,
-        evaluation_strategy="steps",
-        eval_steps=500,
-        save_strategy="steps",
-        save_steps=500,
+        save_strategy="epoch",
         load_best_model_at_end=True,
-        # Optimize for MacBook (CPU/MPS if available)
-        no_cuda=True if not torch.cuda.is_available() else False,
-        fp16=False,  # Disable FP16 for CPU/MPS compatibility
+        no_cuda=True,  # Explicitly disable CUDA for macOS compatibility
     )
-
+    
     # Initialize Trainer
     trainer = Trainer(
-        model=model.model,  # Use the Hugging Face model inside GPT wrapper
+        model=model,
         args=training_args,
         train_dataset=tokenized_dataset["train"],
-        eval_dataset=tokenized_dataset["test"],
+        eval_dataset=tokenized_dataset["validation"] if "validation" in tokenized_dataset else tokenized_dataset["test"],
     )
-
-    # Fine-tune the model
-    trainer.train()
-
-    # Save the fine-tuned model and tokenizer
-    model.save_pretrained("./out/finetuned_distilgpt2")
-    print(f"Model saved to ./out/finetuned_distilgpt2")
+    
+    # Train the model
+    try:
+        trainer.train()
+    except Exception as e:
+        print(f"Error during training: {e}")
+        return
 
 if __name__ == "__main__":
     main()
